@@ -59,6 +59,19 @@ __global__ void histo(unsigned char *buffer, long size, unsigned int *histo)
 	}
 }
 
+void HostHistogram(unsigned char *buffer, long size, unsigned int *histo)
+{
+	for(long i =0; i<size; i++)
+	{
+		histo[i]=0;
+	}
+	for(long i =0; i<size; i++)
+	{
+		unsigned int bufferIndex = (unsigned int ) buffer[i];
+		histo[bufferIndex] += 1;
+	}
+}
+
 int main(int argc, char ** argv) 
 {
     //wbArg_t args;
@@ -72,7 +85,7 @@ int main(int argc, char ** argv)
     const char * inputImageFile;
 
 
- //@@ Insert more code here
+ 	//@@ Insert more code here
 
     //args = wbArg_read(argc, argv); /* parse the input arguments */
 
@@ -103,35 +116,35 @@ int main(int argc, char ** argv)
 	unsigned char *d_GI = NULL;
 	unsigned int * d_HD = NULL;
 
-    	err = cudaMalloc((void **)&d_FA, dataSize * sizeof(float));	
-    	err = cudaMalloc((void **)&d_UA, dataSize * sizeof(unsigned char));	
-    	err = cudaMalloc((void **)&d_GI, imageHeight * imageWidth * sizeof(unsigned char));
+    err = cudaMalloc((void **)&d_FA, dataSize * sizeof(float));	
+    err = cudaMalloc((void **)&d_UA, dataSize * sizeof(unsigned char));	
+    err = cudaMalloc((void **)&d_GI, imageHeight * imageWidth * sizeof(unsigned char));
 	err = cudaMalloc((void **)&d_HD, HISTOGRAM_LENGTH * sizeof(unsigned int));
 
 	err = cudaMemcpy(d_FA, hostInputImageData, dataSize*sizeof(float), cudaMemcpyHostToDevice);
 
 	// Launch the CUDA Kernel
-    	int threadsPerBlock = 256;
-    	int blocksPerGrid =(dataSize + threadsPerBlock - 1) / threadsPerBlock;
+    int threadsPerBlock = 256;
+    int blocksPerGrid =(dataSize + threadsPerBlock - 1) / threadsPerBlock;
 
-    	printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+    printf("CUDA float2uchar launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
 
-    	float2uchar<<<blocksPerGrid, threadsPerBlock>>>(d_FA, d_UA, dataSize);
-    	err = cudaGetLastError();
+    float2uchar<<<blocksPerGrid, threadsPerBlock>>>(d_FA, d_UA, dataSize);
+    err = cudaGetLastError();
 
  	if (err != cudaSuccess)
-    	{
-        	fprintf(stderr, "Failed convert float to uchar (error code %s)!\n", cudaGetErrorString(err));
-        	exit(EXIT_FAILURE);
-    	}
+	{
+    	fprintf(stderr, "Failed convert float to uchar (error code %s)!\n", cudaGetErrorString(err));
+    	exit(EXIT_FAILURE);
+	}
 
 	err = cudaMemcpy(ucharArray, d_UA, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
 	if (err != cudaSuccess)
-    	{
-        	fprintf(stderr, "Failed to copy uchar data from device to host (error code %s)!\n", cudaGetErrorString(err));
-        	exit(EXIT_FAILURE);
-    	}
+	{
+    	fprintf(stderr, "Failed to copy uchar data from device to host (error code %s)!\n", cudaGetErrorString(err));
+    	exit(EXIT_FAILURE);
+	}
 
 	// Diagnostics
 	for(int i =0; i < 10; i++)
@@ -149,27 +162,27 @@ int main(int argc, char ** argv)
 
 
 	// Launch the CUDA Kernel - gray scale
-    	threadsPerBlock = 256;
-    	blocksPerGrid =(dataSize + threadsPerBlock - 1) / threadsPerBlock;
+	threadsPerBlock = 256;
+	blocksPerGrid =(dataSize + threadsPerBlock - 1) / threadsPerBlock;
 
-    	printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+	printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
 
-    	rgb2gray<<<blocksPerGrid, threadsPerBlock>>>(d_UA, d_GI, dataSize);
-    	err = cudaGetLastError();
+	rgb2gray<<<blocksPerGrid, threadsPerBlock>>>(d_UA, d_GI, dataSize);
+	err = cudaGetLastError();
 
  	if (err != cudaSuccess)
-    	{
-        	fprintf(stderr, "Failed greyImage (error code %s)!\n", cudaGetErrorString(err));
-        	exit(EXIT_FAILURE);
-    	}
+	{
+    	fprintf(stderr, "Failed greyImage (error code %s)!\n", cudaGetErrorString(err));
+    	exit(EXIT_FAILURE);
+	}
 
 	err = cudaMemcpy(grayImage, d_GI, imageHeight * imageWidth * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
 	if (err != cudaSuccess)
-    	{
-        	fprintf(stderr, "Failed to copy from device to host (error code %s)!\n", cudaGetErrorString(err));
-        	exit(EXIT_FAILURE);
-    	}
+	{
+    	fprintf(stderr, "Failed to copy from device to host (error code %s)!\n", cudaGetErrorString(err));
+    	exit(EXIT_FAILURE);
+	}
 
 	// Diagnostics
 	for(int i =0; i < 24; i++)
@@ -180,27 +193,27 @@ int main(int argc, char ** argv)
 
 
 	// Launch the CUDA Kernel - histo
-    	threadsPerBlock = 256;
-    	blocksPerGrid =(imageHeight * imageWidth + threadsPerBlock - 1) / threadsPerBlock;
+	threadsPerBlock = 256;
+	blocksPerGrid =(imageHeight * imageWidth + threadsPerBlock - 1) / threadsPerBlock;
 
-    	printf("CUDA kernel histo launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+	printf("CUDA kernel histo launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
 
-    	histo<<<blocksPerGrid, threadsPerBlock>>>(d_GI, imageHeight * imageWidth, d_HD);
-    	err = cudaGetLastError();
+	histo<<<blocksPerGrid, threadsPerBlock>>>(d_GI, imageHeight * imageWidth, d_HD);
+	err = cudaGetLastError();
 
  	if (err != cudaSuccess)
-    	{
-        	fprintf(stderr, "Failed histo (error code %s)!\n", cudaGetErrorString(err));
-        	exit(EXIT_FAILURE);
-    	}
+	{
+    	fprintf(stderr, "Failed histo (error code %s)!\n", cudaGetErrorString(err));
+    	exit(EXIT_FAILURE);
+	}
 
 	err = cudaMemcpy(histoBins, d_HD, HISTOGRAM_LENGTH, cudaMemcpyDeviceToHost);
 
 	if (err != cudaSuccess)
-    	{
-        	fprintf(stderr, "Failed to copy histogram data from device to host (error code %s)!\n", cudaGetErrorString(err));
-        	exit(EXIT_FAILURE);
-    	}
+	{
+    	fprintf(stderr, "Failed to copy histogram data from device to host (error code %s)!\n", cudaGetErrorString(err));
+    	exit(EXIT_FAILURE);
+	}
 
 	// Diagnostics
 	for(int i =0; i < HISTOGRAM_LENGTH; i++)
@@ -208,7 +221,16 @@ int main(int argc, char ** argv)
 		printf("%d\n", histoBins[i]);	
 	}
 
-
+	unsigned int * testHistoBins =  (unsigned int *)malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
+	HostHistogram(grayImage, imageHeight * imageWidth, testHistoBins);
+	for(int i =0; i < HISTOGRAM_LENGTH; i++)
+	{
+		if(histoBins[i] != testHistoBins[i])
+		{
+			printf("Error: index: %d GPUBins:  %d TestBins: %d\n", i, histoBins[i], testHistoBins[i]);
+		}
+			
+	}
 
 	err = cudaFree(d_FA);
 	err = cudaFree(d_UA);

@@ -18,6 +18,33 @@ __global__ void float2uchar(float *input, unsigned char * output, int size)
 	}
 }
 
+__global__ void histo(unsigned char *buffer, long size, unsigned int *histo)
+{
+	__shared__ unsigned int histo_private[256];
+	
+	If(threadIdx.x < 256)
+		histo_private[threadIdx.x]=0;
+		
+	int i = threadIdx.x * blockIdx.x * blockDim.x;
+	
+	// stride is total number of threads
+	int stride = blockDim.x *gridDim.x;
+	
+	while ( i < size)
+	{
+		atomicAdd(&(histo_private[buffer[i], 1);
+		i += stride
+	}
+	
+	// wait for all other threads in the block to finish
+	__syncthreads();
+	
+	if(threadIdx.x < 256)
+	{
+			atomicAdd( &(histo[threadIdx.x], histo_private[threadIdx.x]);
+	}
+}
+
 int main(int argc, char ** argv) 
 {
     //wbArg_t args;

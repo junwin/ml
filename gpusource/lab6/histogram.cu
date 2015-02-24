@@ -4,8 +4,8 @@
 using namespace std;
  
 
-#define IS_DEBUG;
-#define IS_WEBCUDA;
+#define IS_DEBUG
+#define IS_WEBCUDA
 #define HISTOGRAM_LENGTH 256
 
 #define BLOCK_SIZE 512 //@@ You can change this
@@ -13,7 +13,7 @@ using namespace std;
 #define wbCheck(stmt) do {                                 \
         cudaError_t err = stmt;                            \
         if (err != cudaSuccess) {                          \
-            wbLog(ERROR, "Failed to run stmt ", #stmt);    \
+            printf("Error:Failed to run stmt %s\n", #stmt);    \
             return -1;                                     \
         }                                                  \
     } while(0)
@@ -45,7 +45,7 @@ __global__ void ucharCorrect2Float(unsigned char *input, float * output, unsigne
 
 	if(i < size)
 	{
-		unsigned char a = correct_color(input[i]);
+		unsigned char a = correction[input[i]];
 		output[i] = ((float) a)/255;
 	}
 }
@@ -67,22 +67,38 @@ __global__ void rgb2gray(unsigned char * ucharImage, unsigned char * grayImage, 
 	}
 }
 
+void HostHistogram(unsigned char *buffer, long size, unsigned int *histo)
+{
+	for(long i =0; i<HISTOGRAM_LENGTH; i++)
+	{
+		histo[i]=0;
+	}
+	for(long i =0; i<size; i++)
+	{
+		unsigned int bufferIndex = (unsigned int ) buffer[i];
+		histo[bufferIndex] += 1;
+	}
+}
 
 __global__ void histo(unsigned char *buffer, long size, unsigned int *histo)
 {
 	__shared__ unsigned int histo_private[HISTOGRAM_LENGTH];
 	
-	if(threadIdx.x < 256)
+	if(threadIdx.x < HISTOGRAM_LENGTH)
 		histo_private[threadIdx.x] = 0;
+
+	__syncthreads();
 		
-	int i = threadIdx.x * blockIdx.x * blockDim.x;
+	int i = threadIdx.x + blockIdx.x * blockDim.x;
 	
 	// stride is total number of threads
 	int stride = blockDim.x *gridDim.x;
 	
 	while ( i < size)
 	{
-		atomicAdd(&(histo_private[buffer[i]]), 1);
+		unsigned int bIdx = (unsigned int)buffer[i];
+		atomicAdd(&(histo_private[bIdx]), 1);
+		//atomicAdd( &(histo[bIdx]), 1);
 		i += stride;
 	}
 	
@@ -208,29 +224,17 @@ void Scan(float * hostInput, float * hostOutput, int numElements)
     cudaFree(deviceEdgeValsArray);
     cudaFree(deviceEdgeValsScanArray);
 
-    return 0;
+ 
 }
 
 
 
-void HostHistogram(unsigned char *buffer, long size, unsigned int *histo)
-{
-	for(long i =0; i<size; i++)
-	{
-		histo[i]=0;
-	}
-	for(long i =0; i<size; i++)
-	{
-		unsigned int bufferIndex = (unsigned int ) buffer[i];
-		histo[bufferIndex] += 1;
-	}
-}
 
 
 void HostCDF(unsigned int * histo, unsigned int * cdf, long numHiostoElems, long numPixels)
 {
 	cdf[0] = histo[0]/numPixels;
-	for(int i =1; i< numHiostoElems, i++)
+	for(int i =1; i< numHiostoElems; i++)
 	{
 		cdf[i] = cdf[i-1] + histo[i]/numPixels;
 
@@ -263,10 +267,19 @@ unsigned int Clamp(unsigned int x, unsigned int start, unsigned int end)
 
 unsigned int CorrectedColorLevel(unsigned int value, unsigned int * cdf, unsigned int cdfMin)
 {
-	return Clamp(255*(cdf[val] - cdfMin)/(1-cdfMinn), 0, 255);
+	return Clamp(255*(cdf[value] - cdfMin)/(1-cdfMin), 0, 255);
 }
 
 
+
+void HostUcharCorrect2Float(unsigned char *input, float * output, unsigned int * correction, int size) 
+{
+	for(long i = 0; i < size; i++)
+	{
+		unsigned char a = correction[input[i]];
+		output[i] = ((float) a)/255;
+	}	
+}
 
 
 int main(int argc, char ** argv) 
@@ -313,9 +326,9 @@ int main(int argc, char ** argv)
 	unsigned char *d_GI = NULL;
 	unsigned int * d_HD = NULL;
 
-    wbCheck(cudaMalloc((void **)&d_FA, dataSize * sizeof(float));	
-    wbCheck(cudaMalloc((void **)&d_UA, dataSize * sizeof(unsigned char));	
-    wbCheck(cudaMalloc((void **)&d_GI, imageHeight * imageWidth * sizeof(unsigned char));
+    wbCheck(cudaMalloc((void **)&d_FA, dataSize * sizeof(float)));	
+    wbCheck(cudaMalloc((void **)&d_UA, dataSize * sizeof(unsigned char)));	
+    wbCheck(cudaMalloc((void **)&d_GI, imageHeight * imageWidth * sizeof(unsigned char)));
 	wbCheck(cudaMalloc((void **)&d_HD, HISTOGRAM_LENGTH * sizeof(unsigned int)));
 
 	wbCheck(cudaMemcpy(d_FA, hostInputImageData, dataSize*sizeof(float), cudaMemcpyHostToDevice));
@@ -381,7 +394,7 @@ int main(int argc, char ** argv)
 
 	for(int i =0; i < 24; i++)
 	{
-		printf("%u : %u\n", ucharArray[i], grayImage[i]);	
+		printf("%d : %u : %u\n", i, ucharArray[i], grayImage[i]);	
 	}
 
 	#endif
@@ -389,7 +402,8 @@ int main(int argc, char ** argv)
 
 
 	// Launch the CUDA Kernel - histo
-	threadsPerBlock = 256;
+	
+	threadsPerBlock = 512;
 	blocksPerGrid =(imageHeight * imageWidth + threadsPerBlock - 1) / threadsPerBlock;
 
 	printf("CUDA kernel histo launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
@@ -403,58 +417,76 @@ int main(int argc, char ** argv)
     	exit(EXIT_FAILURE);
 	}
 
-	wbCheck(cudaMemcpy(histoBins, d_HD, HISTOGRAM_LENGTH, cudaMemcpyDeviceToHost));
+	wbCheck(cudaMemcpy(histoBins, d_HD, HISTOGRAM_LENGTH * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
 
 	// Diagnostics
-	#if defined(IS_DEBUG)
+#if defined(IS_DEBUG)
 
 	for(int i =0; i < HISTOGRAM_LENGTH; i++)
 	{
-		printf("%d\n", histoBins[i]);	
+		printf("%d %u\n", i, histoBins[i]);	
 	}
 
 	unsigned int * testHistoBins =  (unsigned int *)malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
+	printf("call host calc\n");
 	HostHistogram(grayImage, imageHeight * imageWidth, testHistoBins);
+	printf("compare kernel and host calc\n");
+	long sumHost = 0;
+	long sumGpu = 0;
 	for(int i =0; i < HISTOGRAM_LENGTH; i++)
 	{
+		sumHost += testHistoBins[i];
+		sumGpu += histoBins[i];
 		if(histoBins[i] != testHistoBins[i])
 		{
-			printf("Error: index: %d GPUBins:  %d TestBins: %d\n", i, histoBins[i], testHistoBins[i]);
+			printf("Error: index: %d GPUBins:  %u TestBins: %u\n", i, histoBins[i], testHistoBins[i]);
 		}
 			
 	}
 
-	#endif
+	printf("Height:%d Width%d Sum host = %ld SumGpu = %ld\n", imageHeight, imageWidth, sumHost, sumGpu);
+
+#endif
 
 
-
+	printf("Get CDF\n");
 	unsigned int * cdf =   (unsigned int *)malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
 
 	HostCDF(histoBins,  cdf, HISTOGRAM_LENGTH, imageHeight * imageWidth);
-
-
 	unsigned int cdfMin = HostGetMin(cdf, HISTOGRAM_LENGTH);
 
-	//  should be a kerne to create array of corrections
-	unsigned int CorrectedColorLevel(unsigned int value, unsigned int * cdf, unsigned int cdfMin);
-	unsigned int * correction = malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
+#if defined(IS_DEBUG)
+
+	for(int i =0; i < HISTOGRAM_LENGTH; i++)
+	{
+		printf("cdf: %d:%u\n", i, cdf[i]);	
+	}
+	printf("min cdf: %u\n", cdfMin);	
+
+
+#endif
+
+	//  should be a kernel to create array of corrections
+	printf("get host correction array\n");
+	unsigned int * correction = (unsigned int *) malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
 	for(int i = 0; i < HISTOGRAM_LENGTH; i++)
 	{
-		correction[i] = CorrectedColorLevel((unsigned int) i, unsigned int * cdf, unsigned int cdfMin);
+		correction[i] = CorrectedColorLevel((unsigned int) i, cdf, cdfMin);
 	}
 
-
-	// 
+	printf("Attempt correction\n");
 	hostOutputImageData = wbImage_getData(outputImage);
-	void ucharCorrect2Float(unsigned char *input, hostOutputImageData, unsigned int * correction, int size) 
+	HostUcharCorrect2Float(ucharArray, hostOutputImageData, correction, dataSize); 
+	//void ucharCorrect2Float(unsigned char *input, hostOutputImageData, unsigned int * correction, int size) 
 
 	// Diagnostics
 	#if defined(IS_DEBUG)
 	printf("Compare with expected output image\n");
 	wbImage_t testImage;
 	float * hostTestImageData;
-	testImageFile = "output.ppm";
+
+	const char * testImageFile = "output.ppm";
 
 
 	testImage = wbImport(testImageFile);
@@ -464,7 +496,7 @@ int main(int argc, char ** argv)
 	long errorCount =0;
 	for(long i =0; i < dataSize; i++)
 	{
-		if(hostTestImageData[i] != hostOutputImageData)
+		if(hostTestImageData[i] != hostOutputImageData[i])
 		{
 			errorCount++;
 		}

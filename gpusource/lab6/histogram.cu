@@ -4,8 +4,19 @@
 using namespace std;
  
 
-
+#define IS_DEBUG;
+#define IS_WEBCUDA;
 #define HISTOGRAM_LENGTH 256
+
+#define BLOCK_SIZE 512 //@@ You can change this
+
+#define wbCheck(stmt) do {                                 \
+        cudaError_t err = stmt;                            \
+        if (err != cudaSuccess) {                          \
+            wbLog(ERROR, "Failed to run stmt ", #stmt);    \
+            return -1;                                     \
+        }                                                  \
+    } while(0)
 
 __global__ void float2uchar(float *input, unsigned char * output, int size) 
 {
@@ -16,6 +27,31 @@ __global__ void float2uchar(float *input, unsigned char * output, int size)
 		output[i] = (unsigned char) (255 * input[i]);
 	}
 }
+
+__global__ void uchar2Float(unsigned char *input, float * output, int size) 
+{
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
+
+	if(i < size)
+	{
+		output[i] = ((float) input[i])/255;
+	}
+}
+
+
+__global__ void ucharCorrect2Float(unsigned char *input, float * output, unsigned int * correction, int size) 
+{
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
+
+	if(i < size)
+	{
+		unsigned char a = correct_color(input[i]);
+		output[i] = ((float) a)/255;
+	}
+}
+
+
+
 
 __global__ void rgb2gray(unsigned char * ucharImage, unsigned char * grayImage, int size) 
 {
@@ -59,6 +95,124 @@ __global__ void histo(unsigned char *buffer, long size, unsigned int *histo)
 	}
 }
 
+
+__global__ void applyEdgeContibutions(float *input, float *aux, int len) 
+{
+    unsigned int t = threadIdx.x;
+    unsigned int start = 2 * blockIdx.x * BLOCK_SIZE;
+
+    if (blockIdx.x) 
+    {
+       if (start + t < len)
+          input[start + t] += aux[blockIdx.x - 1];
+
+       if (start + BLOCK_SIZE + t < len)
+          input[start + BLOCK_SIZE + t] += aux[blockIdx.x - 1];
+    }
+}
+
+__global__ void scan(float * input, float * output, float *aux, int len) 
+{
+    // Load a segment of the input vector into shared memory
+    __shared__ float scan_array[BLOCK_SIZE << 1];
+
+    unsigned int t = threadIdx.x;
+    unsigned int start = 2 * blockIdx.x * BLOCK_SIZE;
+
+    if (start + t < len)
+       scan_array[t] = input[start + t];
+    else
+       scan_array[t] = 0;
+
+    if (start + BLOCK_SIZE + t < len)
+       scan_array[BLOCK_SIZE + t] = input[start + BLOCK_SIZE + t];
+    else
+       scan_array[BLOCK_SIZE + t] = 0;
+
+    __syncthreads();
+
+    // Reduction
+    int stride;
+    for (stride = 1; stride <= BLOCK_SIZE; stride <<= 1) 
+    {
+       int index = (t + 1) * stride * 2 - 1;
+
+       if (index < 2 * BLOCK_SIZE)
+          scan_array[index] += scan_array[index - stride];
+
+       __syncthreads();
+    }
+
+    // Post reduction
+    for (stride = BLOCK_SIZE >> 1; stride; stride >>= 1) 
+    {
+       int index = (t + 1) * stride * 2 - 1;
+
+       if (index + stride < 2 * BLOCK_SIZE)
+          scan_array[index + stride] += scan_array[index];
+
+       __syncthreads();
+    }
+
+    if (start + t < len)
+       output[start + t] = scan_array[t];
+
+    if (start + BLOCK_SIZE + t < len)
+       output[start + BLOCK_SIZE + t] = scan_array[BLOCK_SIZE + t];
+
+    if (aux && t == 0)
+       aux[blockIdx.x] = scan_array[2 * BLOCK_SIZE - 1];
+}
+
+
+void Scan(float * hostInput, float * hostOutput, int numElements)
+{
+    float * deviceInput;
+    float * deviceOutput;
+    float *deviceEdgeValsArray;
+    float *deviceEdgeValsScanArray;
+
+    cudaHostAlloc(&hostOutput, numElements * sizeof(float), cudaHostAllocDefault);
+  
+    cudaMalloc((void**)&deviceInput, numElements*sizeof(float));
+    cudaMalloc((void**)&deviceOutput, numElements*sizeof(float));
+
+    cudaMalloc((void**)&deviceEdgeValsArray, (BLOCK_SIZE << 1) * sizeof(float));
+    cudaMalloc((void**)&deviceEdgeValsScanArray, (BLOCK_SIZE << 1) * sizeof(float));
+
+    cudaMemset(deviceOutput, 0, numElements*sizeof(float));
+
+    cudaMemcpy(deviceInput, hostInput, numElements*sizeof(float), cudaMemcpyHostToDevice);
+
+    int numBlocks = ceil((float)numElements/(BLOCK_SIZE<<1));
+
+    dim3 dimGrid(numBlocks, 1, 1);
+    dim3 dimBlock(BLOCK_SIZE, 1, 1);
+
+    //@@ Modify this to complete the functionality of the scan
+    //@@ on the deivce
+
+    scan<<<dimGrid, dimBlock>>>(deviceInput, deviceOutput, deviceEdgeValsArray, numElements);
+    cudaDeviceSynchronize();
+
+    scan<<<dim3(1,1,1), dimBlock>>>(deviceEdgeValsArray, deviceEdgeValsScanArray, NULL, BLOCK_SIZE << 1);
+    cudaDeviceSynchronize();
+
+    applyEdgeContibutions<<<dimGrid, dimBlock>>>(deviceOutput, deviceEdgeValsScanArray, numElements);
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(hostOutput, deviceOutput, numElements*sizeof(float), cudaMemcpyDeviceToHost);
+
+    cudaFree(deviceInput);
+    cudaFree(deviceOutput);
+    cudaFree(deviceEdgeValsArray);
+    cudaFree(deviceEdgeValsScanArray);
+
+    return 0;
+}
+
+
+
 void HostHistogram(unsigned char *buffer, long size, unsigned int *histo)
 {
 	for(long i =0; i<size; i++)
@@ -71,6 +225,49 @@ void HostHistogram(unsigned char *buffer, long size, unsigned int *histo)
 		histo[bufferIndex] += 1;
 	}
 }
+
+
+void HostCDF(unsigned int * histo, unsigned int * cdf, long numHiostoElems, long numPixels)
+{
+	cdf[0] = histo[0]/numPixels;
+	for(int i =1; i< numHiostoElems, i++)
+	{
+		cdf[i] = cdf[i-1] + histo[i]/numPixels;
+
+	}
+}
+
+unsigned int HostGetMin(unsigned int * input, long numElems)
+{
+	unsigned int minVal = input[0];
+	for(long i = 0; i < numElems; i++)
+	{
+		if(input[i] < minVal)
+			minVal = input[i];
+	}
+
+	return minVal;
+}
+
+unsigned int Clamp(unsigned int x, unsigned int start, unsigned int end)
+{
+	unsigned int temp =start;
+	if (x > start)
+		temp = x;
+
+	if(temp > end)
+		temp = end;
+
+	return temp;
+}
+
+unsigned int CorrectedColorLevel(unsigned int value, unsigned int * cdf, unsigned int cdfMin)
+{
+	return Clamp(255*(cdf[val] - cdfMin)/(1-cdfMinn), 0, 255);
+}
+
+
+
 
 int main(int argc, char ** argv) 
 {
@@ -116,12 +313,12 @@ int main(int argc, char ** argv)
 	unsigned char *d_GI = NULL;
 	unsigned int * d_HD = NULL;
 
-    err = cudaMalloc((void **)&d_FA, dataSize * sizeof(float));	
-    err = cudaMalloc((void **)&d_UA, dataSize * sizeof(unsigned char));	
-    err = cudaMalloc((void **)&d_GI, imageHeight * imageWidth * sizeof(unsigned char));
-	err = cudaMalloc((void **)&d_HD, HISTOGRAM_LENGTH * sizeof(unsigned int));
+    wbCheck(cudaMalloc((void **)&d_FA, dataSize * sizeof(float));	
+    wbCheck(cudaMalloc((void **)&d_UA, dataSize * sizeof(unsigned char));	
+    wbCheck(cudaMalloc((void **)&d_GI, imageHeight * imageWidth * sizeof(unsigned char));
+	wbCheck(cudaMalloc((void **)&d_HD, HISTOGRAM_LENGTH * sizeof(unsigned int)));
 
-	err = cudaMemcpy(d_FA, hostInputImageData, dataSize*sizeof(float), cudaMemcpyHostToDevice);
+	wbCheck(cudaMemcpy(d_FA, hostInputImageData, dataSize*sizeof(float), cudaMemcpyHostToDevice));
 
 	// Launch the CUDA Kernel
     int threadsPerBlock = 256;
@@ -138,15 +335,13 @@ int main(int argc, char ** argv)
     	exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(ucharArray, d_UA, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+	wbCheck(cudaMemcpy(ucharArray, d_UA, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost));
 
-	if (err != cudaSuccess)
-	{
-    	fprintf(stderr, "Failed to copy uchar data from device to host (error code %s)!\n", cudaGetErrorString(err));
-    	exit(EXIT_FAILURE);
-	}
+	
 
 	// Diagnostics
+	#if defined(IS_DEBUG)
+
 	for(int i =0; i < 10; i++)
 	{
 		printf("%f : %u : %u\n", hostInputImageData[i], ucharArray[i], (unsigned char) (255 * hostInputImageData[i]));	
@@ -159,6 +354,7 @@ int main(int argc, char ** argv)
 			printf("Error pos %d : %f : %u : %u\n", i, hostInputImageData[i], ucharArray[i], (unsigned char) (255 * hostInputImageData[i]));	
 		}
 	}
+	#endif
 
 
 	// Launch the CUDA Kernel - gray scale
@@ -176,19 +372,19 @@ int main(int argc, char ** argv)
     	exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(grayImage, d_GI, imageHeight * imageWidth * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+	wbCheck(cudaMemcpy(grayImage, d_GI, imageHeight * imageWidth * sizeof(unsigned char), cudaMemcpyDeviceToHost));
 
-	if (err != cudaSuccess)
-	{
-    	fprintf(stderr, "Failed to copy from device to host (error code %s)!\n", cudaGetErrorString(err));
-    	exit(EXIT_FAILURE);
-	}
+	
 
-	// Diagnostics
+		// Diagnostics
+	#if defined(IS_DEBUG)
+
 	for(int i =0; i < 24; i++)
 	{
 		printf("%u : %u\n", ucharArray[i], grayImage[i]);	
 	}
+
+	#endif
 
 
 
@@ -207,15 +403,12 @@ int main(int argc, char ** argv)
     	exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(histoBins, d_HD, HISTOGRAM_LENGTH, cudaMemcpyDeviceToHost);
+	wbCheck(cudaMemcpy(histoBins, d_HD, HISTOGRAM_LENGTH, cudaMemcpyDeviceToHost));
 
-	if (err != cudaSuccess)
-	{
-    	fprintf(stderr, "Failed to copy histogram data from device to host (error code %s)!\n", cudaGetErrorString(err));
-    	exit(EXIT_FAILURE);
-	}
 
 	// Diagnostics
+	#if defined(IS_DEBUG)
+
 	for(int i =0; i < HISTOGRAM_LENGTH; i++)
 	{
 		printf("%d\n", histoBins[i]);	
@@ -231,6 +424,58 @@ int main(int argc, char ** argv)
 		}
 			
 	}
+
+	#endif
+
+
+
+	unsigned int * cdf =   (unsigned int *)malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
+
+	HostCDF(histoBins,  cdf, HISTOGRAM_LENGTH, imageHeight * imageWidth);
+
+
+	unsigned int cdfMin = HostGetMin(cdf, HISTOGRAM_LENGTH);
+
+	//  should be a kerne to create array of corrections
+	unsigned int CorrectedColorLevel(unsigned int value, unsigned int * cdf, unsigned int cdfMin);
+	unsigned int * correction = malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
+	for(int i = 0; i < HISTOGRAM_LENGTH; i++)
+	{
+		correction[i] = CorrectedColorLevel((unsigned int) i, unsigned int * cdf, unsigned int cdfMin);
+	}
+
+
+	// 
+	hostOutputImageData = wbImage_getData(outputImage);
+	void ucharCorrect2Float(unsigned char *input, hostOutputImageData, unsigned int * correction, int size) 
+
+	// Diagnostics
+	#if defined(IS_DEBUG)
+	printf("Compare with expected output image\n");
+	wbImage_t testImage;
+	float * hostTestImageData;
+	testImageFile = "output.ppm";
+
+
+	testImage = wbImport(testImageFile);
+	hostTestImageData = wbImage_getData(testImage); 
+	hostInputImageData = wbImage_getData(inputImage);
+	
+	long errorCount =0;
+	for(long i =0; i < dataSize; i++)
+	{
+		if(hostTestImageData[i] != hostOutputImageData)
+		{
+			errorCount++;
+		}
+	}
+
+	if(errorCount >0)
+	{
+		printf("output and test image do not match %ld \n", errorCount);
+	}
+
+	#endif
 
 	err = cudaFree(d_FA);
 	err = cudaFree(d_UA);

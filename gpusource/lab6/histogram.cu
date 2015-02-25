@@ -231,17 +231,17 @@ void Scan(float * hostInput, float * hostOutput, int numElements)
 
 
 
-void HostCDF(unsigned int * histo, unsigned int * cdf, long numHiostoElems, long numPixels)
+void HostCDF(unsigned int * histo, float * cdf, long numHiostoElems, long numPixels)
 {
 	cdf[0] = histo[0]/numPixels;
 	for(int i =1; i< numHiostoElems; i++)
 	{
-		cdf[i] = cdf[i-1] + histo[i]/numPixels;
+		cdf[i] = cdf[i-1] + ((float)histo[i])/numPixels;
 
 	}
 }
 
-unsigned int HostGetMin(unsigned int * input, long numElems)
+float HostGetMin(float * input, long numElems)
 {
 	unsigned int minVal = input[0];
 	for(long i = 0; i < numElems; i++)
@@ -265,7 +265,7 @@ unsigned int Clamp(unsigned int x, unsigned int start, unsigned int end)
 	return temp;
 }
 
-unsigned int CorrectedColorLevel(unsigned int value, unsigned int * cdf, unsigned int cdfMin)
+unsigned int CorrectedColorLevel(unsigned int value, float * cdf, float cdfMin)
 {
 	return Clamp(255*(cdf[value] - cdfMin)/(1-cdfMin), 0, 255);
 }
@@ -451,18 +451,18 @@ int main(int argc, char ** argv)
 
 
 	printf("Get CDF\n");
-	unsigned int * cdf =   (unsigned int *)malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
+	float * cdf =   (unsigned int *)malloc(HISTOGRAM_LENGTH * sizeof(float));
 
 	HostCDF(histoBins,  cdf, HISTOGRAM_LENGTH, imageHeight * imageWidth);
-	unsigned int cdfMin = HostGetMin(cdf, HISTOGRAM_LENGTH);
+	float cdfMin = HostGetMin(cdf, HISTOGRAM_LENGTH);
 
 #if defined(IS_DEBUG)
 
 	for(int i =0; i < HISTOGRAM_LENGTH; i++)
 	{
-		printf("cdf: %d:%u\n", i, cdf[i]);	
+		printf("cdf: %d:%f\n", i, cdf[i]);	
 	}
-	printf("min cdf: %u\n", cdfMin);	
+	printf("min cdf: %f\n", cdfMin);	
 
 
 #endif

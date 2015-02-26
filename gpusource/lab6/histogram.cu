@@ -451,7 +451,7 @@ int main(int argc, char ** argv)
 
 
 	printf("Get CDF\n");
-	float * cdf =   (unsigned int *)malloc(HISTOGRAM_LENGTH * sizeof(float));
+	float * cdf =   (float *)malloc(HISTOGRAM_LENGTH * sizeof(float));
 
 	HostCDF(histoBins,  cdf, HISTOGRAM_LENGTH, imageHeight * imageWidth);
 	float cdfMin = HostGetMin(cdf, HISTOGRAM_LENGTH);
@@ -475,13 +475,27 @@ int main(int argc, char ** argv)
 		correction[i] = CorrectedColorLevel((unsigned int) i, cdf, cdfMin);
 	}
 
+
+#if defined(IS_DEBUG)
+
+	for(int i =0; i < HISTOGRAM_LENGTH; i++)
+	{
+		printf("correction: %d:%u\n", i, correction[i]);	
+	}
+	
+
+
+#endif
+
+
+
 	printf("Attempt correction\n");
 	hostOutputImageData = wbImage_getData(outputImage);
 	HostUcharCorrect2Float(ucharArray, hostOutputImageData, correction, dataSize); 
 	//void ucharCorrect2Float(unsigned char *input, hostOutputImageData, unsigned int * correction, int size) 
 
 	// Diagnostics
-	#if defined(IS_DEBUG)
+#if defined(IS_DEBUG)
 	printf("Compare with expected output image\n");
 	wbImage_t testImage;
 	float * hostTestImageData;
@@ -499,6 +513,10 @@ int main(int argc, char ** argv)
 		if(hostTestImageData[i] != hostOutputImageData[i])
 		{
 			errorCount++;
+			if(errorCount < 30)
+			{
+				printf("i: %ld input:%f uchar:%u expected:%f actual:%f\n", i, hostInputImageData[i], ucharArray[i], hostTestImageData[i],hostOutputImageData[i]);	
+			}
 		}
 	}
 
@@ -507,7 +525,7 @@ int main(int argc, char ** argv)
 		printf("output and test image do not match %ld \n", errorCount);
 	}
 
-	#endif
+#endif
 
 	err = cudaFree(d_FA);
 	err = cudaFree(d_UA);

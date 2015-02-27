@@ -233,7 +233,7 @@ void Scan(float * hostInput, float * hostOutput, int numElements)
 
 void HostCDF(unsigned int * histo, float * cdf, long numHiostoElems, long numPixels)
 {
-	cdf[0] = histo[0]/numPixels;
+	cdf[0] = ((float)histo[0])/numPixels;
 	for(int i =1; i< numHiostoElems; i++)
 	{
 		cdf[i] = cdf[i-1] + ((float)histo[i])/numPixels;
@@ -276,7 +276,7 @@ void HostUcharCorrect2Float(unsigned char *input, float * output, unsigned int *
 {
 	for(long i = 0; i < size; i++)
 	{
-		unsigned char a = correction[input[i]];
+		unsigned char a = correction[(unsigned int)input[i]];
 		output[i] = ((float) a)/255;
 	}	
 }

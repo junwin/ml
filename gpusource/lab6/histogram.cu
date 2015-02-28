@@ -6,6 +6,9 @@ using namespace std;
 
 
 #define IS_WEBCUDA
+
+
+
 #define HISTOGRAM_LENGTH 256
 
 #define BLOCK_SIZE 512 //@@ You can change this
@@ -53,10 +56,10 @@ __global__ void ucharCorrect2Float(unsigned char *input, float * output, unsigne
 
 
 
-__global__ void rgb2gray(unsigned char * ucharImage, unsigned char * grayImage, int size) 
+__global__ void rgb2gray(unsigned char * ucharImage, unsigned char * grayImage, uint size) 
 {
-	int i = blockDim.x * blockIdx.x + threadIdx.x;
-	int rgbIdx = i*3;
+	uint i = blockDim.x * blockIdx.x + threadIdx.x;
+	uint rgbIdx = i*3;
 
 	if(i < size)
 	{
@@ -294,13 +297,15 @@ int main(int argc, char ** argv)
     float * hostOutputImageData;
     const char * inputImageFile;
 
-
+#if defined(IS_WEBCUDA)
  	//@@ Insert more code here
-
-    //args = wbArg_read(argc, argv); /* parse the input arguments */
+	wbArg_t args;
+    args = wbArg_read(argc, argv); /* parse the input arguments */
+    inputImageFile = wbArg_getInputFile(args, 0);
+#else
 
     inputImageFile = "input.ppm";
-
+#endif
 
 	inputImage = wbImport(inputImageFile);
 	imageWidth = wbImage_getWidth(inputImage);
@@ -311,14 +316,23 @@ int main(int argc, char ** argv)
 
 	int dataSize = imageHeight * imageWidth * imageChannels;
 
-	printf("Input %s width %d height %d channels %d dataSize %d\n",inputImageFile, imageWidth, imageHeight, imageChannels, dataSize);
+	unsigned pixels = imageHeight * imageWidth;
+
+	printf("Input %s width %d height %d channels %d dataSize %d pixels %u\n",inputImageFile, imageWidth, imageHeight, imageChannels, dataSize, pixels);
 
 	
 	cudaError_t err = cudaSuccess;
 
 	
-	unsigned char * ucharArray = (unsigned char *)malloc(dataSize*sizeof(unsigned char));
-	unsigned char * grayImage = (unsigned char *)malloc(imageHeight * imageWidth * sizeof(unsigned char));
+	unsigned char * ucharArray = (unsigned char *)malloc(dataSize * sizeof(unsigned char));
+	unsigned char * grayImage = (unsigned char *)malloc(pixels * sizeof(unsigned char));
+
+	if(grayImage == NULL)
+	{
+		printf("Cannot malloc grayImage: %ld\n", pixels * sizeof(unsigned char));
+		return -1; 
+	}
+
 	unsigned int * histoBins =  (unsigned int *)malloc(HISTOGRAM_LENGTH * sizeof(unsigned int));
 
 	float *d_FA = NULL;
@@ -328,7 +342,7 @@ int main(int argc, char ** argv)
 
     wbCheck(cudaMalloc((void **)&d_FA, dataSize * sizeof(float)));	
     wbCheck(cudaMalloc((void **)&d_UA, dataSize * sizeof(unsigned char)));	
-    wbCheck(cudaMalloc((void **)&d_GI, imageHeight * imageWidth * sizeof(unsigned char)));
+    wbCheck(cudaMalloc((void **)&d_GI, pixels * sizeof(unsigned char)));
 	wbCheck(cudaMalloc((void **)&d_HD, HISTOGRAM_LENGTH * sizeof(unsigned int)));
 
 	wbCheck(cudaMemcpy(d_FA, hostInputImageData, dataSize*sizeof(float), cudaMemcpyHostToDevice));
@@ -353,7 +367,7 @@ int main(int argc, char ** argv)
 	
 
 	// Diagnostics
-	#if defined(IS_DEBUG)
+#if defined(IS_DEBUG)
 
 	for(int i =0; i < 10; i++)
 	{
@@ -367,14 +381,21 @@ int main(int argc, char ** argv)
 			printf("Error pos %d : %f : %u : %u\n", i, hostInputImageData[i], ucharArray[i], (unsigned char) (255 * hostInputImageData[i]));	
 		}
 	}
-	#endif
+#endif
 
 
 	// Launch the CUDA Kernel - gray scale
 	threadsPerBlock = 256;
-	blocksPerGrid =(dataSize + threadsPerBlock - 1) / threadsPerBlock;
+	blocksPerGrid =(pixels + threadsPerBlock - 1) / threadsPerBlock;
 
 	printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+
+	err = cudaMemcpy(grayImage, d_GI, pixels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+	if (err != cudaSuccess)
+	{
+    	printf("Failed first cudaMemcpy(grayImage.. (error code %s)!\n", cudaGetErrorString(err));
+    	exit(EXIT_FAILURE);
+	}
 
 	rgb2gray<<<blocksPerGrid, threadsPerBlock>>>(d_UA, d_GI, dataSize);
 	err = cudaGetLastError();
@@ -385,19 +406,25 @@ int main(int argc, char ** argv)
     	exit(EXIT_FAILURE);
 	}
 
-	wbCheck(cudaMemcpy(grayImage, d_GI, imageHeight * imageWidth * sizeof(unsigned char), cudaMemcpyDeviceToHost));
+
+	err = cudaMemcpy(grayImage, d_GI, pixels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+	if (err != cudaSuccess)
+	{
+    	printf("Failed cudaMemcpy(grayImage.. (error code %s)!\n", cudaGetErrorString(err));
+    	exit(EXIT_FAILURE);
+	}
 
 	
 
 		// Diagnostics
-	#if defined(IS_DEBUG)
+#if defined(IS_DEBUG)
 
 	for(int i =0; i < 24; i++)
 	{
 		printf("%d : %u : %u\n", i, ucharArray[i], grayImage[i]);	
 	}
 
-	#endif
+#endif
 
 
 
@@ -527,6 +554,12 @@ int main(int argc, char ** argv)
 
 	wbPPM_export("blag.ppm", outputImage);  
 
+#endif
+
+#if defined(IS_WEBCUDA)
+ 	//@@ Insert more code here
+    wbSolution(args, outputImage);
+    
 #endif
 
 	err = cudaFree(d_FA);

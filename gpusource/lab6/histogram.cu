@@ -4,7 +4,7 @@
 using namespace std;
  
 
-#define IS_DEBUG
+
 #define IS_WEBCUDA
 #define HISTOGRAM_LENGTH 256
 
@@ -277,7 +277,7 @@ void HostUcharCorrect2Float(unsigned char *input, float * output, unsigned int *
 	for(long i = 0; i < size; i++)
 	{
 		unsigned char a = correction[(unsigned int)input[i]];
-		output[i] = ((float) a)/255;
+		output[i] = ((float) a)/255.0;
 	}	
 }
 
@@ -524,6 +524,8 @@ int main(int argc, char ** argv)
 	{
 		printf("output and test image do not match %ld \n", errorCount);
 	}
+
+	wbPPM_export("blag.ppm", outputImage);  
 
 #endif
 
